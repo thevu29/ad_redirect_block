@@ -1,138 +1,472 @@
 // ==UserScript==
-// @name         Chặn redirect / mở tab mới – xem phim cùng site bình thường
-// @description  Chặn redirect sang domain khác và mở tab mới; chuyển tập (cùng site) mở trong cùng tab
-// @version      1.2.0
-// @grant        none
+// @name         Ads Navigation Control
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  Chặn click và điều hướng quảng cáo trên các trang web
+// @author       thedusk4203
+// @match        *://*/*
 // @run-at       document-start
+// @grant        unsafeWindow
 // ==/UserScript==
 
 (function () {
-  'use strict';
+  "use strict";
+  const realWindow =
+    typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
 
-  const currentOrigin = location.origin;
+  // Danh sách blacklist - chỉ chạy script trên các trang này
+  // Chỉ cần nhập tên miền chính, không cần TLD (.com, .org, .xyz...)
+  // Ví dụ: 'abc' sẽ chặn trên các trang abc.com, abc.org, abc.xyz, abc.net...
+  const blacklist = [
+    "truyenqqno",
+    // Thêm các trang muốn chặn quảng cáo vào đây theo dạng 'abc',
+  ];
 
-  function getOrigin(url) {
-    try {
-      return new URL(url, location.origin).origin;
-    } catch {
-      return '';
+  // Danh sách các TLD phụ phổ biến
+  const secondLevelTLDs = [
+    "co",
+    "com",
+    "net",
+    "org",
+    "edu",
+    "gov",
+    "ac",
+    "or",
+    "ne",
+  ];
+
+  // Hàm lấy tên miền chính (bỏ TLD) - xử lý cả ccTLD như .co.uk, .com.vn
+  function getBaseDomain(hostname) {
+    const parts = hostname.split(".");
+    if (parts.length < 2) return hostname;
+
+    // Kiểm tra nếu là ccTLD (ví dụ: abc.co.uk, abc.com.vn)
+    if (
+      parts.length >= 3 &&
+      secondLevelTLDs.includes(parts[parts.length - 2])
+    ) {
+      return parts[parts.length - 3]; // abc.co.uk -> abc
     }
+    return parts[parts.length - 2]; // abc.com -> abc
   }
 
-  /** true = URL sang domain khác (cần chặn). Cùng domain (chuyển tập, cùng site) = false. */
-  function isExternalUrl(url) {
-    if (!url || typeof url !== 'string') return false;
-    const t = url.trim();
-    if (t === '' || t === '#') return false;
-    if (t.startsWith('#')) return false;
-    if (t.toLowerCase().startsWith('javascript:')) return false;
-    try {
-      return getOrigin(t) !== currentOrigin;
-    } catch {
-      return true;
-    }
-  }
-
-  function getHref(el) {
-    const a = el.closest('a') || (el.tagName === 'A' ? el : null);
-    return a ? (a.getAttribute('href') || a.href || '') : '';
-  }
-
-  function isNewTabLink(el) {
-    const a = el.closest('a') || (el.tagName === 'A' ? el : null);
-    if (!a) return false;
-    const target = (a.getAttribute && a.getAttribute('target')) || a.target || '';
-    return /_blank|_new|_window/i.test(target);
-  }
-
-  // Click: chặn link sang domain khác; link cùng site nhưng target="_blank" → chuyển trong cùng tab
-  document.addEventListener(
-    'click',
-    function (e) {
-      const href = getHref(e.target);
-      if (!href) return;
-
-      if (isExternalUrl(href)) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        return false;
-      }
-
-      // Cùng site nhưng link mở tab mới (target="_blank") → mở trong cùng tab thay vì tab mới
-      if (isNewTabLink(e.target)) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        try {
-          const fullUrl = new URL(href, location.origin).href;
-          location.href = fullUrl;
-        } catch (_) {}
-        return false;
-      }
-    },
-    true
-  );
-
-  // window.open: không cho mở tab mới; nếu URL cùng site thì chuyển trong cùng tab
-  const rawOpen = window.open;
-  window.open = function (url, target, features) {
-    if (!url) return rawOpen.apply(this, arguments);
-    if (isExternalUrl(url)) return null;
-    // Cùng site: chuyển trong cùng tab thay vì mở tab mới
-    try {
-      location.href = new URL(url, location.origin).href;
-    } catch (_) {}
-    return null;
-  };
-
-  // Chặn gán location sang domain khác
-  const desc = Object.getOwnPropertyDescriptor(window, 'location');
-  if (desc && desc.set) {
-    const rawSet = desc.set;
-    Object.defineProperty(window, 'location', {
-      get: desc.get,
-      set: function (v) {
-        if (v && isExternalUrl(v)) return;
-        rawSet.call(window, v);
-      },
-      configurable: true,
-      enumerable: true,
+  function isBlacklisted(domain) {
+    const baseDomain = getBaseDomain(domain).toLowerCase();
+    return blacklist.some((blocked) => {
+      const blockedLower = blocked.toLowerCase();
+      return (
+        domain.toLowerCase().includes(blockedLower) ||
+        baseDomain === blockedLower ||
+        baseDomain.includes(blockedLower)
+      );
     });
   }
 
-  try {
-    const loc = window.location;
-    const hrefDesc = Object.getOwnPropertyDescriptor(loc, 'href');
-    if (hrefDesc && hrefDesc.set) {
-      const rawHrefSet = hrefDesc.set;
-      Object.defineProperty(loc, 'href', {
-        get: hrefDesc.get,
-        set: function (v) {
-          if (v && isExternalUrl(v)) return;
-          rawHrefSet.call(loc, v);
-        },
-        configurable: true,
-        enumerable: true,
-      });
-    }
-  } catch (_) {}
+  if (!isBlacklisted(realWindow.location.hostname)) {
+    return;
+  }
 
-  // Form submit sang domain khác → chặn
+  console.log(
+    "[AdsControl] Script đang hoạt động trên:",
+    realWindow.location.hostname,
+  );
+  const currentOrigin = realWindow.location.origin;
+
+  let toastContainer = null;
+  let lastBlockedUrl = null;
+  function createToastContainer() {
+    if (toastContainer) return toastContainer;
+
+    toastContainer = document.createElement("div");
+    toastContainer.id = "adscontrol-toast-container";
+    toastContainer.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 2147483647;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        `;
+    if (document.body) {
+      document.body.appendChild(toastContainer);
+    } else {
+      document.addEventListener(
+        "DOMContentLoaded",
+        () => {
+          document.body.appendChild(toastContainer);
+        },
+        { once: true },
+      );
+    }
+
+    return toastContainer;
+  }
+
+  function showToast(message, blockedUrl = null, type = "block") {
+    const container = createToastContainer();
+    if (!container || !document.body) return;
+
+    if (blockedUrl) {
+      lastBlockedUrl = blockedUrl;
+    }
+    const toast = document.createElement("div");
+    toast.style.cssText = `
+            all: initial;
+            background: ${type === "block" ? "linear-gradient(135deg, #e74c3c, #c0392b)" : "linear-gradient(135deg, #3498db, #2980b9)"} !important;
+            color: white !important;
+            padding: 10px 16px !important;
+            border-radius: 8px !important;
+            font-size: 13px !important;
+            font-weight: 500 !important;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3) !important;
+            display: flex !important;
+            align-items: center !important;
+            gap: 10px !important;
+            opacity: 0 !important;
+            transform: translateX(100%) !important;
+            transition: all 0.3s ease !important;
+            max-width: 350px !important;
+            word-break: break-all !important;
+            box-sizing: border-box !important;
+            margin: 0 !important;
+            border: none !important;
+            position: relative !important;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            line-height: 1.4 !important;
+        `;
+
+    const icon = type === "block" ? "🐧" : "ℹ️";
+    const contentSpan = document.createElement("span");
+    contentSpan.style.cssText = `
+            flex: 1 !important;
+            color: white !important;
+            font-size: 13px !important;
+            font-weight: 500 !important;
+            line-height: 1.4 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            background: none !important;
+            text-align: left !important;
+            font-family: inherit !important;
+        `;
+    contentSpan.textContent = message;
+    const allowBtn = document.createElement("button");
+    allowBtn.textContent = "Cho phép";
+    allowBtn.style.cssText = `
+            all: initial;
+            background: rgba(255,255,255,0.25) !important;
+            border: 1px solid rgba(255,255,255,0.4) !important;
+            color: white !important;
+            padding: 4px 10px !important;
+            border-radius: 4px !important;
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            cursor: pointer !important;
+            transition: background 0.2s !important;
+            white-space: nowrap !important;
+            display: inline-block !important;
+            text-align: center !important;
+            line-height: 1.4 !important;
+            margin: 0 !important;
+            box-sizing: border-box !important;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+            outline: none !important;
+            text-decoration: none !important;
+            vertical-align: middle !important;
+            flex-shrink: 0 !important;
+        `;
+    allowBtn.onmouseenter = () =>
+      (allowBtn.style.background = "rgba(255,255,255,0.4) !important");
+    allowBtn.onmouseleave = () =>
+      (allowBtn.style.background = "rgba(255,255,255,0.25) !important");
+    allowBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (blockedUrl) {
+        window.open(blockedUrl, "_blank");
+      }
+      toast.style.opacity = "0";
+      toast.style.transform = "translateX(100%)";
+      setTimeout(() => toast.remove(), 300);
+    };
+    const iconSpan = document.createElement("span");
+    iconSpan.style.cssText = `
+            font-size: 16px !important;
+            line-height: 1 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border: none !important;
+            background: none !important;
+            color: white !important;
+            flex-shrink: 0 !important;
+        `;
+    iconSpan.textContent = icon;
+    toast.appendChild(iconSpan);
+    toast.appendChild(contentSpan);
+    if (blockedUrl) {
+      toast.appendChild(allowBtn);
+    }
+    container.appendChild(toast);
+    requestAnimationFrame(() => {
+      toast.style.opacity = "1";
+      toast.style.transform = "translateX(0)";
+    });
+
+    setTimeout(() => {
+      toast.style.opacity = "0";
+      toast.style.transform = "translateX(100%)";
+      setTimeout(() => toast.remove(), 300);
+    }, 4000);
+
+    while (container.children.length > 2) {
+      container.firstChild.remove();
+    }
+  }
+
+  function isAllowedNavigation(url) {
+    try {
+      if (!url || url === "" || url === "#") return true;
+      if (typeof url === "string" && url.startsWith("javascript:")) return true;
+
+      const parsedUrl = new URL(url, realWindow.location.href);
+      return parsedUrl.origin === currentOrigin;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isAllowedIframe(url) {
+    try {
+      if (
+        !url ||
+        url === "" ||
+        url === "about:blank" ||
+        url === "about:srcdoc"
+      ) {
+        return true;
+      }
+      const parsedUrl = new URL(url, realWindow.location.href);
+      return parsedUrl.origin === currentOrigin;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  const originalWindowOpen = realWindow.open;
+  realWindow.open = function (url, name, features) {
+    if (isAllowedNavigation(url)) {
+      return originalWindowOpen.call(realWindow, url, name, features);
+    }
+    console.warn("[AdsControl] window.open bị chặn:", url);
+    try {
+      const fullUrl = new URL(url, realWindow.location.href).href;
+      showToast(
+        "Chặn popup: " + new URL(url, realWindow.location.href).hostname,
+        fullUrl,
+      );
+    } catch (e) {
+      showToast("Chặn popup độc hại", url);
+    }
+    return null;
+  };
+
   document.addEventListener(
-    'submit',
+    "click",
     function (e) {
-      const form = e.target;
-      if (!form) return;
-      const action = (form.getAttribute && form.getAttribute('action')) || form.action;
-      if (action && isExternalUrl(action)) {
+      const target = e.target.closest("a");
+      if (target && target.href) {
+        if (!isAllowedNavigation(target.href)) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          console.warn("[AdsControl] Click bị chặn:", target.href);
+          try {
+            showToast(
+              "Chặn link: " + new URL(target.href).hostname,
+              target.href,
+            );
+          } catch (e) {
+            showToast("Chặn link độc hại", target.href);
+          }
+          return false;
+        }
+      }
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "mousedown",
+    function (e) {
+      const target = e.target.closest("a");
+      if (target && target.href && !isAllowedNavigation(target.href)) {
         e.preventDefault();
         e.stopPropagation();
+        e.stopImmediatePropagation();
         return false;
       }
     },
-    true
+    true,
   );
 
-  console.log('[Block Redirect] Đã bật – chặn redirect sang domain khác và mở tab mới; chuyển tập cùng site trong cùng tab.');
+  if (realWindow.history) {
+    const originalPushState = realWindow.history.pushState.bind(
+      realWindow.history,
+    );
+    realWindow.history.pushState = function (state, title, url) {
+      if (isAllowedNavigation(url)) {
+        return originalPushState(state, title, url);
+      }
+      console.warn("[AdsControl] pushState bị chặn:", url);
+    };
+    const originalReplaceState = realWindow.history.replaceState.bind(
+      realWindow.history,
+    );
+    realWindow.history.replaceState = function (state, title, url) {
+      if (isAllowedNavigation(url)) {
+        return originalReplaceState(state, title, url);
+      }
+      console.warn("[AdsControl] replaceState bị chặn:", url);
+    };
+  }
+
+  try {
+    const locationProto = realWindow.Location.prototype;
+    const originalAssign = locationProto.assign;
+    locationProto.assign = function (url) {
+      if (isAllowedNavigation(url)) {
+        return originalAssign.call(this, url);
+      }
+      console.warn("[AdsControl] location.assign bị chặn:", url);
+      showToast("Chặn chuyển hướng");
+    };
+    const originalReplace = locationProto.replace;
+    locationProto.replace = function (url) {
+      if (isAllowedNavigation(url)) {
+        return originalReplace.call(this, url);
+      }
+      console.warn("[AdsControl] location.replace bị chặn:", url);
+      showToast("Chặn chuyển hướng");
+    };
+    const hrefDescriptor = Object.getOwnPropertyDescriptor(
+      locationProto,
+      "href",
+    );
+    if (hrefDescriptor && hrefDescriptor.set) {
+      const originalHrefSetter = hrefDescriptor.set;
+      Object.defineProperty(realWindow.location, "href", {
+        get: hrefDescriptor.get,
+        set: function (url) {
+          if (isAllowedNavigation(url)) {
+            return originalHrefSetter.call(this, url);
+          }
+          console.warn("[AdsControl] location.href bị chặn:", url);
+          showToast("Chặn chuyển hướng");
+        },
+        configurable: true,
+      });
+    }
+  } catch (e) {
+    console.warn(
+      "[AdsControl] Không thể override location methods:",
+      e.message,
+    );
+  }
+
+  document.addEventListener(
+    "submit",
+    function (e) {
+      const form = e.target;
+      if (form && form.action && !isAllowedNavigation(form.action)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        console.warn("[AdsControl] Form submit bị chặn:", form.action);
+        showToast("Chặn form submit");
+        return false;
+      }
+    },
+    true,
+  );
+
+  function removeBlockedIframes() {
+    const iframes = document.querySelectorAll("iframe");
+    let removedCount = 0;
+    iframes.forEach((iframe) => {
+      if (!isAllowedIframe(iframe.src)) {
+        iframe.remove();
+        console.warn("[AdsControl] Iframe bị xóa:", iframe.src);
+        removedCount++;
+      }
+    });
+    if (removedCount > 0) {
+      showToast(`Xóa ${removedCount} iframe QC`);
+    }
+  }
+
+  function setupIframeControl() {
+    removeBlockedIframes();
+    const observer = new MutationObserver((mutations) => {
+      let hasNewIframes = false;
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === 1) {
+            // Element node
+            if (node.nodeName === "IFRAME") {
+              hasNewIframes = true;
+            } else if (node.querySelector) {
+              if (node.querySelector("iframe")) {
+                hasNewIframes = true;
+              }
+            }
+          }
+        });
+      });
+      if (hasNewIframes) {
+        removeBlockedIframes();
+      }
+    });
+    observer.observe(document.documentElement || document, {
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  function blockMetaRefresh() {
+    const metaTags = document.querySelectorAll('meta[http-equiv="refresh"]');
+    metaTags.forEach((meta) => {
+      const content = meta.getAttribute("content");
+      if (content) {
+        const urlMatch = content.match(/url\s*=\s*['"]?([^'">\s]+)/i);
+        if (urlMatch && !isAllowedNavigation(urlMatch[1].trim())) {
+          meta.remove();
+          console.warn("[AdsControl] Meta refresh bị chặn:", urlMatch[1]);
+          showToast("Chặn auto-redirect");
+        }
+      }
+    });
+  }
+
+  realWindow.addEventListener("beforeunload", function (e) {}, true);
+
+  function init() {
+    setupIframeControl();
+    blockMetaRefresh();
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
+  realWindow.addEventListener(
+    "load",
+    function () {
+      setTimeout(removeBlockedIframes, 100);
+      setTimeout(removeBlockedIframes, 500);
+      setTimeout(removeBlockedIframes, 1000);
+    },
+    { once: true },
+  );
 })();
